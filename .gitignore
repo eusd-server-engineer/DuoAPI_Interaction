@@ -1,0 +1,52 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# IMPORTANT: Secret files - NEVER commit these!
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+secrets.json
+config.ini
+api_credentials.json
+duo_config.json
+
+# Secret management files
+*.kdbx
+*.kdbx.lock
+*.gpg
+*.enc
+*.encrypted
+.sops.yaml
+
+# Logs and backups (may contain sensitive data)
+logs/
+backups/
+*.log
+*.bak
+*.backup
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+student_list.txt
+*.csv
