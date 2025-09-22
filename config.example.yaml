@@ -1,0 +1,61 @@
+# Duo API Configuration
+# Copy this to config.yaml and update with your settings
+
+# API Credentials (can also be set via environment variables)
+api:
+  # integration_key: ${DUO_IKEY}  # Uses env var if not set here
+  # secret_key: ${DUO_SKEY}
+  # host: ${DUO_HOST}
+
+# Rate limiting settings
+rate_limiting:
+  calls_per_minute: 50
+  batch_size: 10
+  delay_between_batches: 2  # seconds
+
+# Retry settings
+retry:
+  max_attempts: 3
+  base_delay: 1  # seconds
+  max_delay: 60  # seconds
+  exponential_base: 2
+
+# Student account patterns
+patterns:
+  student_accounts:
+    - '^\d{6}$'  # 6-digit pattern
+    # Add more patterns as needed
+
+# Operational settings
+operations:
+  dry_run: true  # Set to false to actually delete
+  interactive: false
+  create_backups: true
+  backup_dir: 'backups'
+  log_dir: 'logs'
+  log_level: 'INFO'  # DEBUG, INFO, WARNING, ERROR
+
+# Safety settings
+safety:
+  max_deletions_per_run: 1000  # Prevent accidental mass deletion
+  require_confirmation: true
+  excluded_users: []  # List of usernames to never delete
+
+# Notification settings (optional)
+notifications:
+  enabled: false
+  email:
+    smtp_server: smtp.gmail.com
+    smtp_port: 587
+    from_address: admin@example.com
+    to_addresses:
+      - admin@example.com
+    send_on_error: true
+    send_summary: true
+
+# Reporting
+reporting:
+  generate_csv: true
+  generate_html: false
+  include_timestamps: true
+  include_audit_trail: true
