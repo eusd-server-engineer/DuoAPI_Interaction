@@ -6,7 +6,11 @@
       "WebFetch(domain:duo.com)",
       "Bash(mkdir:*)",
       "Bash(uv init:*)",
-      "Bash(uv add:*)"
+      "Bash(uv add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh repo create:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []
