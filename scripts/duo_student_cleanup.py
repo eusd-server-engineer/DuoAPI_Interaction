@@ -13,7 +13,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
@@ -21,6 +21,13 @@ from urllib.parse import quote, urlencode
 import requests
 from dateutil.tz import tzutc
 from dotenv import load_dotenv
+
+# Import email notifier if available
+try:
+    from email_notifier import EmailNotifier
+    EMAIL_AVAILABLE = True
+except ImportError:
+    EMAIL_AVAILABLE = False
 
 
 class DuoAdminAPI:
@@ -149,6 +156,15 @@ def main():
     parser.add_argument('--username-file', help='File containing list of usernames to check')
     parser.add_argument('--interactive', action='store_true', help='Confirm each deletion')
 
+    # Email notification arguments
+    parser.add_argument('--email-to', nargs='+', help='Email addresses to send report to')
+    parser.add_argument('--email-on-success', action='store_true', help='Send email even when no errors')
+    parser.add_argument('--email-on-error', action='store_true', default=True, help='Send email when errors occur')
+    parser.add_argument('--smtp-server', default=os.getenv('SMTP_SERVER'), help='SMTP server hostname')
+    parser.add_argument('--smtp-port', type=int, default=int(os.getenv('SMTP_PORT', '587')), help='SMTP server port')
+    parser.add_argument('--smtp-user', default=os.getenv('SMTP_USER'), help='SMTP username')
+    parser.add_argument('--smtp-password', default=os.getenv('SMTP_PASSWORD'), help='SMTP password')
+
     args = parser.parse_args()
 
     # Validate credentials
@@ -174,6 +190,9 @@ def main():
     log_file = log_dir / f"duo_cleanup_{timestamp}.log"
     backup_file = backup_dir / f"duo_users_backup_{timestamp}.json"
     results_file = log_dir / f"duo_cleanup_results_{timestamp}.csv"
+
+    # Track start time for duration
+    start_time = datetime.now()
 
     results = []
 
@@ -306,6 +325,10 @@ def main():
         for r in results:
             f.write(f"{r['username']},{r['in_duo']},{r['managed_by_sync']},{r['action']},{r['result']}\n")
 
+    # Calculate duration
+    duration = datetime.now() - start_time
+    duration_str = str(duration).split('.')[0]  # Remove microseconds
+
     # Summary
     print("\n" + "="*60)
     print("SUMMARY")
@@ -316,10 +339,56 @@ def main():
     print(f"Deleted: {sum(1 for r in results if r['action'] == 'DELETED')}")
     print(f"Would delete (dry run): {sum(1 for r in results if r['action'] == 'Would DELETE')}")
     print(f"Errors: {sum(1 for r in results if r['action'] == 'ERROR')}")
+    print(f"Duration: {duration_str}")
     print(f"\nLogs written to: {log_file}")
     print(f"Results CSV: {results_file}")
     if backup_file.exists():
         print(f"Backup file: {backup_file}")
+
+    # Send email notification if configured
+    if args.email_to and EMAIL_AVAILABLE:
+        print("\nSending email notification...")
+
+        # Prepare results summary for email
+        email_results = {
+            'total_processed': len(results),
+            'deleted': sum(1 for r in results if r['action'] == 'DELETED'),
+            'failed': sum(1 for r in results if r['action'] == 'ERROR'),
+            'skipped': sum(1 for r in results if r.get('managed_by_sync')),
+            'duration': duration_str,
+            'error_details': [f"{r['username']}: {r['result']}" for r in results if r['action'] == 'ERROR']
+        }
+
+        # Initialize email notifier
+        notifier = EmailNotifier(
+            smtp_server=args.smtp_server,
+            smtp_port=args.smtp_port,
+            smtp_user=args.smtp_user,
+            smtp_password=args.smtp_password
+        )
+
+        # Determine subject based on results
+        if args.dry_run:
+            subject = f"Duo Cleanup Report (DRY RUN) - {timestamp}"
+        else:
+            subject = f"Duo Cleanup Report - {timestamp}"
+
+        # Send notification
+        email_sent = notifier.send_notification(
+            to_addresses=args.email_to,
+            subject=subject,
+            results=email_results,
+            attachments=[str(results_file)] if results_file.exists() else None,
+            send_on_success=args.email_on_success,
+            send_on_error=args.email_on_error
+        )
+
+        if email_sent:
+            print("Email notification sent successfully!")
+        else:
+            print("Failed to send email notification")
+    elif args.email_to and not EMAIL_AVAILABLE:
+        print("\nWarning: Email requested but email_notifier module not available")
 
 
 if __name__ == '__main__':
