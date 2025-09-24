@@ -28,7 +28,9 @@
       "Bash(.venvScriptspython scriptsgithub_monitor.py --once)",
       "Bash(.venv\\Scripts\\python.exe scripts\\github_monitor.py:*)",
       "Bash(uv run:*)",
-      "Bash(Start-ScheduledTask -TaskName \"Claude-GitHub-Monitor\")"
+      "Bash(Start-ScheduledTask -TaskName \"Claude-GitHub-Monitor\")",
+      "Bash(gh run view:*)",
+      "Bash(git fetch:*)"
     ],
     "deny": [],
     "ask": []
