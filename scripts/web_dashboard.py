@@ -26,7 +26,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+# Generate a secure secret key if not provided
+import secrets
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 auth = HTTPBasicAuth()
 
 # Global variables for operation tracking
@@ -202,10 +204,24 @@ def run_cleanup_operation(dry_run: bool = False, username_file: str = None, user
 def save_operation_to_db(**kwargs):
     """Save operation results to database"""
     conn = sqlite3.connect(DB_PATH)
-    columns = ', '.join(kwargs.keys())
-    placeholders = ', '.join('?' * len(kwargs))
-    conn.execute(f'INSERT INTO operations (timestamp, {columns}) VALUES (?, {placeholders})',
-                [datetime.now().isoformat()] + list(kwargs.values()))
+    # Use parameterized query to prevent SQL injection
+    allowed_columns = ['operation_type', 'dry_run', 'status', 'total_processed',
+                      'deleted_count', 'error_count', 'log_file', 'results_file',
+                      'backup_file', 'duration', 'user_triggered']
+
+    # Filter kwargs to only allowed columns
+    safe_data = {k: v for k, v in kwargs.items() if k in allowed_columns}
+
+    if safe_data:
+        columns = ', '.join(safe_data.keys())
+        placeholders = ', '.join('?' * len(safe_data))
+        query = f'INSERT INTO operations (timestamp, {columns}) VALUES (?, {placeholders})'
+        conn.execute(query, [datetime.now().isoformat()] + list(safe_data.values()))
+    else:
+        # Just save timestamp if no valid columns
+        conn.execute('INSERT INTO operations (timestamp, status) VALUES (?, ?)',
+                    [datetime.now().isoformat(), 'unknown'])
+
     conn.commit()
     conn.close()
 
