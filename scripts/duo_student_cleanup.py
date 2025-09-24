@@ -157,13 +157,15 @@ def main():
     parser.add_argument('--interactive', action='store_true', help='Confirm each deletion')
 
     # Email notification arguments
+    # Default to server_engineer@eusd.org as specified in PR #4 comment
+    default_email = os.getenv('EMAIL_TO', 'server_engineer@eusd.org')
     parser.add_argument('--email-to', nargs='+',
-                       default=[os.getenv('EMAIL_TO', 'admin@eusd.org')] if os.getenv('EMAIL_TO') else None,
-                       help='Email addresses to send report to (default: admin@eusd.org)')
+                       default=[default_email] if default_email else None,
+                       help='Email addresses to send report to (default: server_engineer@eusd.org)')
     parser.add_argument('--email-on-success', action='store_true', help='Send email even when no errors')
     parser.add_argument('--email-on-error', action='store_true', default=True, help='Send email when errors occur')
-    parser.add_argument('--smtp-server', default=os.getenv('SMTP_SERVER'), help='SMTP server hostname')
-    parser.add_argument('--smtp-port', type=int, default=int(os.getenv('SMTP_PORT', '587')), help='SMTP server port')
+    parser.add_argument('--smtp-server', default=os.getenv('SMTP_SERVER', 'mail.eusd.org'), help='SMTP server hostname')
+    parser.add_argument('--smtp-port', type=int, default=int(os.getenv('SMTP_PORT', '25')), help='SMTP server port')
     parser.add_argument('--smtp-user', default=os.getenv('SMTP_USER'), help='SMTP username')
     parser.add_argument('--smtp-password', default=os.getenv('SMTP_PASSWORD'), help='SMTP password')
 
@@ -362,11 +364,14 @@ def main():
         }
 
         # Initialize email notifier
+        # EUSD mail server (port 25) doesn't use TLS or authentication
         notifier = EmailNotifier(
             smtp_server=args.smtp_server,
             smtp_port=args.smtp_port,
             smtp_user=args.smtp_user,
-            smtp_password=args.smtp_password
+            smtp_password=args.smtp_password,
+            use_tls=(args.smtp_port != 25),  # No TLS for port 25
+            from_address=os.getenv('EMAIL_FROM', 'automation@eusd.org')
         )
 
         # Determine subject based on results

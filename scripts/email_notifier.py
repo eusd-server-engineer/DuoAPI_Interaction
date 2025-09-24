@@ -41,12 +41,14 @@ class EmailNotifier:
             from_address: Sender email address
         """
         # Try to load from environment variables if not provided
-        self.smtp_server = smtp_server or os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        self.smtp_port = smtp_port or int(os.getenv('SMTP_PORT', '587'))
+        # EUSD mail server defaults: mail.eusd.org:25 with no auth
+        self.smtp_server = smtp_server or os.getenv('SMTP_SERVER', 'mail.eusd.org')
+        self.smtp_port = smtp_port or int(os.getenv('SMTP_PORT', '25'))
         self.smtp_user = smtp_user or os.getenv('SMTP_USER')
         self.smtp_password = smtp_password or os.getenv('SMTP_PASSWORD')
-        self.use_tls = use_tls
-        self.from_address = from_address or os.getenv('EMAIL_FROM', self.smtp_user)
+        # Port 25 typically doesn't use TLS
+        self.use_tls = use_tls if smtp_port != 25 else False
+        self.from_address = from_address or os.getenv('EMAIL_FROM', 'automation@eusd.org')
 
     def create_summary_html(self, results: Dict) -> str:
         """Create HTML formatted summary of cleanup results"""
@@ -277,10 +279,11 @@ Results:
     def _send_email(self, msg: MIMEMultipart, to_addresses: List[str]):
         """Send the email via SMTP"""
         with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-            if self.use_tls:
+            # Only use TLS if not on port 25 (EUSD mail server doesn't use TLS)
+            if self.use_tls and self.smtp_port != 25:
                 server.starttls()
 
-            # Login if credentials provided
+            # Login if credentials provided (EUSD doesn't require auth)
             if self.smtp_user and self.smtp_password:
                 server.login(self.smtp_user, self.smtp_password)
 
@@ -317,7 +320,7 @@ if __name__ == "__main__":
 
     # Send test email
     success = notifier.send_notification(
-        to_addresses=[os.getenv('EMAIL_TO', 'admin@example.com')],
+        to_addresses=[os.getenv('EMAIL_TO', 'server_engineer@eusd.org')],
         subject='Duo Cleanup Report - Test',
         results=test_results,
         attachments=['logs/duo_cleanup_results_20250922_144738.csv'] if Path('logs/duo_cleanup_results_20250922_144738.csv').exists() else None
