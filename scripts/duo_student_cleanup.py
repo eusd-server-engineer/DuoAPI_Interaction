@@ -157,7 +157,9 @@ def main():
     parser.add_argument('--interactive', action='store_true', help='Confirm each deletion')
 
     # Email notification arguments
-    parser.add_argument('--email-to', nargs='+', help='Email addresses to send report to')
+    parser.add_argument('--email-to', nargs='+',
+                       default=[os.getenv('EMAIL_TO', 'admin@eusd.org')] if os.getenv('EMAIL_TO') else None,
+                       help='Email addresses to send report to (default: admin@eusd.org)')
     parser.add_argument('--email-on-success', action='store_true', help='Send email even when no errors')
     parser.add_argument('--email-on-error', action='store_true', default=True, help='Send email when errors occur')
     parser.add_argument('--smtp-server', default=os.getenv('SMTP_SERVER'), help='SMTP server hostname')
