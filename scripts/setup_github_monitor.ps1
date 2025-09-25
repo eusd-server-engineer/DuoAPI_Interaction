@@ -50,16 +50,13 @@ try {
             -Settings $settings
     } else {
         Write-Host "Creating new task '$taskName'..." -ForegroundColor Green
-        # Register as current user (no admin needed)
-        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
-
         Register-ScheduledTask `
             -TaskName $taskName `
             -Description $description `
             -Action $action `
             -Trigger $trigger `
             -Settings $settings `
-            -Principal $principal
+            -RunLevel Highest
     }
 
     Write-Host "`n✅ GitHub Monitor scheduled task created successfully!" -ForegroundColor Green

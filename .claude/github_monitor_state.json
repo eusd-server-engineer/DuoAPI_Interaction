@@ -1,12 +1,8 @@
 {
-  "last_check": "2025-09-23T19:01:29.794821",
+  "last_check": "2025-09-23T16:43:00.599238",
   "processed_issues": [
-    5,
     3
   ],
   "processed_prs": [],
-  "processed_comments": [
-    "issue_5_IC_kwDOP09Td87GQTHn",
-    "issue_3_IC_kwDOP09Td87GQS9R"
-  ]
+  "processed_comments": []
 }

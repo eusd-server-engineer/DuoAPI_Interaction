@@ -5,7 +5,6 @@ Monitors GitHub for new issues and PRs that need attention
 """
 
 import json
-import os
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -47,22 +46,15 @@ class GitHubMonitor:
     def gh_command(self, *args) -> Optional[str]:
         """Execute gh CLI command"""
         try:
-            # Set up environment for gh CLI
-            env = os.environ.copy()
-            env['GH_HOST'] = 'github.com'
-
             result = subprocess.run(
                 ["gh"] + list(args),
                 capture_output=True,
                 text=True,
-                check=True,
-                env=env
+                check=True
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
             print(f"Error running gh command: {e}")
-            if e.stderr:
-                print(f"Error details: {e.stderr}")
             return None
 
     def check_new_issues(self) -> List[Dict]:
@@ -105,7 +97,7 @@ class GitHubMonitor:
         actionable = []
 
         # Get open PRs
-        prs_json = self.gh_command("pr", "list", "--json", "number,title,author,isDraft,statusCheckRollup")
+        prs_json = self.gh_command("pr", "list", "--json", "number,title,author,isDraft,checksState")
         if not prs_json:
             return actionable
 
@@ -119,8 +111,7 @@ class GitHubMonitor:
                 continue
 
             # Check for failing checks
-            status_check = pr.get('statusCheckRollup', [])
-            if status_check and any(check.get('state') == 'FAILURE' for check in status_check):
+            if pr.get('checksState') == 'FAILURE':
                 if f"pr_{pr_num}_fix" not in self.state['processed_prs']:
                     actionable.append({
                         'type': 'pr',
@@ -151,15 +142,9 @@ class GitHubMonitor:
         actionable = []
 
         # Get recent issue and PR comments
-        # First get the list of open issues to check comments on those
-        issues_json = self.gh_command("issue", "list", "--json", "number", "-L", "10")
-        if not issues_json:
-            return actionable
+        # This is harder with gh CLI, so we'll check last few issues/PRs
 
-        issues = json.loads(issues_json)
-        issue_numbers = [issue['number'] for issue in issues]
-
-        for issue_num in issue_numbers:
+        for issue_num in range(1, 10):  # Check last 10 issues/PRs
             comments_json = self.gh_command("issue", "view", str(issue_num), "--json", "comments")
             if not comments_json:
                 continue
@@ -276,11 +261,9 @@ class GitHubMonitor:
                     print(report)
                     print("="*60 + "\n")
 
-                    # Save to file for autonomous action system
-                    Path(".claude").mkdir(exist_ok=True)
+                    # Could trigger Claude here or save to file
                     with open(".claude/pending_work.md", "w") as f:
                         f.write(report)
-                    print("[SAVED] Pending work saved to .claude/pending_work.md")
                 else:
                     print("[OK] No new items")
 
@@ -320,13 +303,6 @@ def main():
     if args.once:
         report = monitor.run_check()
         print(report)
-
-        # Save to file if actionable items found
-        if "No new actionable items" not in report:
-            Path(".claude").mkdir(exist_ok=True)
-            with open(".claude/pending_work.md", "w") as f:
-                f.write(report)
-            print("\n[SAVED] Pending work saved to .claude/pending_work.md")
     else:
         monitor.run_continuous()
 
