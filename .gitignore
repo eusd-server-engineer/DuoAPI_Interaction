@@ -50,3 +50,8 @@ desktop.ini
 # Project specific
 student_list.txt
 *.csv
+
+# Web dashboard database
+dashboard.db
+dashboard.db-wal
+dashboard.db-shm
