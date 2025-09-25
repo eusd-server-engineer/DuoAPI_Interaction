@@ -141,10 +141,29 @@ class GitHubMonitor:
         """Check for new comments mentioning Claude"""
         actionable = []
 
-        # Get recent issue and PR comments
-        # This is harder with gh CLI, so we'll check last few issues/PRs
+        # First, get list of open issues to check
+        issues_json = self.gh_command("issue", "list", "--json", "number", "--limit", "20")
+        if not issues_json:
+            return actionable
 
-        for issue_num in range(1, 10):  # Check last 10 issues/PRs
+        try:
+            issues = json.loads(issues_json)
+            issue_numbers = [issue['number'] for issue in issues]
+        except:
+            # Fallback to checking recent issue numbers if list fails
+            issue_numbers = []
+
+        # Also get open PRs since they can have comments too
+        prs_json = self.gh_command("pr", "list", "--json", "number", "--limit", "20")
+        if prs_json:
+            try:
+                prs = json.loads(prs_json)
+                issue_numbers.extend([pr['number'] for pr in prs])
+            except:
+                pass
+
+        # Check comments on each open issue/PR
+        for issue_num in issue_numbers:
             comments_json = self.gh_command("issue", "view", str(issue_num), "--json", "comments")
             if not comments_json:
                 continue
