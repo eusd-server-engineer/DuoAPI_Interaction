@@ -34,7 +34,8 @@ class GitHubMonitor:
             "last_check": None,
             "processed_issues": [],
             "processed_prs": [],
-            "processed_comments": []
+            "processed_comments": [],
+            "processed_workflows": []
         }
 
     def save_state(self):
@@ -137,6 +138,40 @@ class GitHubMonitor:
 
         return actionable
 
+    def check_workflow_failures(self) -> List[Dict]:
+        """Check for failed workflow runs"""
+        actionable = []
+
+        # Get recent workflow runs
+        runs_json = self.gh_command("run", "list", "--limit", "10", "--json", "conclusion,name,displayTitle,databaseId,status,workflowName")
+        if not runs_json:
+            return actionable
+
+        try:
+            runs = json.loads(runs_json)
+        except:
+            return actionable
+
+        for run in runs:
+            run_id = str(run.get('databaseId', ''))
+
+            # Skip if already processed
+            if f"workflow_{run_id}" in self.state.get('processed_workflows', []):
+                continue
+
+            # Only report failures
+            if run.get('conclusion') == 'failure' and run.get('status') == 'completed':
+                actionable.append({
+                    'type': 'workflow',
+                    'run_id': run_id,
+                    'name': run.get('workflowName', 'Unknown'),
+                    'title': run.get('displayTitle', 'No title'),
+                    'action': 'investigate',
+                    'reason': 'Workflow run failed'
+                })
+
+        return actionable
+
     def check_comments(self) -> List[Dict]:
         """Check for new comments mentioning Claude"""
         actionable = []
@@ -225,6 +260,12 @@ class GitHubMonitor:
                 report.append(f"- **Action**: Respond to comment")
                 report.append(f"- **Snippet**: {item['comment_snippet']}")
 
+            elif item['type'] == 'workflow':
+                report.append(f"### [WORKFLOW] {item['name']}: {item['title']}")
+                report.append(f"- **Action**: {item['action']}")
+                report.append(f"- **Reason**: {item['reason']}")
+                report.append(f"- **Command**: `gh run view {item['run_id']} --log-failed`")
+
             report.append("")
 
         report.append("## Suggested Actions:")
@@ -243,6 +284,8 @@ class GitHubMonitor:
                 self.state['processed_prs'].append(f"pr_{item['number']}_{item['action']}")
             elif item['type'] == 'comment':
                 self.state['processed_comments'].append(item['comment_id'])
+            elif item['type'] == 'workflow':
+                self.state['processed_workflows'].append(f"workflow_{item['run_id']}")
 
     def run_check(self) -> str:
         """Run a single check cycle"""
@@ -253,6 +296,7 @@ class GitHubMonitor:
         actionable.extend(self.check_new_issues())
         actionable.extend(self.check_pr_reviews())
         actionable.extend(self.check_comments())
+        actionable.extend(self.check_workflow_failures())
 
         # Generate report
         report = self.generate_report(actionable)
@@ -313,7 +357,8 @@ def main():
             "last_check": None,
             "processed_issues": [],
             "processed_prs": [],
-            "processed_comments": []
+            "processed_comments": [],
+            "processed_workflows": []
         }
         monitor.save_state()
         print("[OK] State reset")
