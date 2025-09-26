@@ -322,6 +322,11 @@ def main():
     if args.once:
         report = monitor.run_check()
         print(report)
+
+        # Write pending work file if there are actionable items
+        if "No new actionable items" not in report:
+            with open(".claude/pending_work.md", "w") as f:
+                f.write(report)
     else:
         monitor.run_continuous()
 

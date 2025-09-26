@@ -73,9 +73,13 @@ class AutonomousActionSystem:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"[{timestamp}] {message}\n"
 
-        ACTION_LOG_FILE.parent.mkdir(exist_ok=True)
-        with open(ACTION_LOG_FILE, 'a') as f:
-            f.write(log_entry)
+        try:
+            ACTION_LOG_FILE.parent.mkdir(exist_ok=True)
+            with open(ACTION_LOG_FILE, 'a') as f:
+                f.write(log_entry)
+        except (PermissionError, IOError) as e:
+            # If we can't write to the log file, just continue
+            print(f"Warning: Could not write to log file: {e}")
 
         print(log_entry.strip())
 
