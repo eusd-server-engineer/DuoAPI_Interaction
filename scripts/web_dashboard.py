@@ -284,28 +284,115 @@ DASHBOARD_HTML = '''
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        .status-running { color: #ffc107; }
-        .status-completed { color: #198754; }
-        .status-failed { color: #dc3545; }
-        .status-error { color: #dc3545; }
+        :root {
+            --primary-color: #0066cc;
+            --primary-dark: #004c99;
+            --secondary-color: #00a8cc;
+            --success-color: #00a878;
+            --warning-color: #f39c12;
+            --danger-color: #e74c3c;
+            --light-bg: #f4f7fa;
+            --card-shadow: 0 2px 8px rgba(0, 102, 204, 0.1);
+        }
+
+        body {
+            background-color: var(--light-bg);
+        }
+
+        .navbar {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%) !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .card {
+            border: none;
+            box-shadow: var(--card-shadow);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 102, 204, 0.15);
+        }
+
+        .card-header {
+            background-color: var(--primary-color);
+            color: white;
+            font-weight: 600;
+            border-bottom: none;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+
+        .btn-primary:hover {
+            background-color: var(--primary-dark);
+            border-color: var(--primary-dark);
+        }
+
+        .status-running {
+            color: var(--warning-color);
+            font-weight: 600;
+        }
+
+        .status-completed {
+            color: var(--success-color);
+            font-weight: 600;
+        }
+
+        .status-failed, .status-error {
+            color: var(--danger-color);
+            font-weight: 600;
+        }
+
         .log-container {
-            background-color: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 0.375rem;
+            background-color: #ffffff;
+            border: 1px solid #e0e6ed;
+            border-radius: 0.5rem;
             padding: 1rem;
-            font-family: monospace;
+            font-family: 'Courier New', monospace;
             font-size: 0.9rem;
             white-space: pre-wrap;
             max-height: 300px;
             overflow-y: auto;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
         }
+
         .card-stats {
-            background: linear-gradient(45deg, #007bff, #0056b3);
+            background: linear-gradient(135deg, var(--secondary-color) 0%, var(--primary-color) 100%);
             color: white;
+            border: none;
         }
+
+        .card-stats .card-body {
+            padding: 1.5rem;
+        }
+
+        .card-stats h3 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
         .operation-status {
             position: sticky;
             top: 20px;
+        }
+
+        .table {
+            background-color: white;
+        }
+
+        .table thead {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .badge {
+            padding: 0.5em 0.75em;
+            font-weight: 600;
         }
     </style>
 </head>
