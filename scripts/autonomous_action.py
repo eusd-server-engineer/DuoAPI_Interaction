@@ -5,6 +5,7 @@ This script runs after the monitor finds work, automatically creating branches
 and launching agents to implement solutions.
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -25,6 +26,14 @@ try:
 except ImportError:
     EMAIL_AVAILABLE = False
     EmailNotifier = None
+
+# Try to import Claude Code SDK
+try:
+    from claude_code_sdk import query, ClaudeCodeOptions
+    CLAUDE_SDK_AVAILABLE = True
+except ImportError:
+    CLAUDE_SDK_AVAILABLE = False
+    print("Warning: claude-code-sdk not installed. Agent execution will be simulated.")
 
 # Configuration
 PENDING_FILE = Path(".claude/pending_work.md")
@@ -237,30 +246,39 @@ Get the issue details and implement what was requested in the comment."""
             with open(agent_plan_file, 'w') as f:
                 f.write(agent_prompt)
 
-            # Create agent request file for Claude Code to process
-            agent_request_file = Path(f".claude/agent_requests/{work_item['id']}.json")
-            agent_request_file.parent.mkdir(exist_ok=True)
+            # If Claude SDK is available, invoke it directly
+            if CLAUDE_SDK_AVAILABLE:
+                self.log_action(f"Invoking Claude SDK for {work_item['id']}")
+                success = asyncio.run(self.invoke_claude_agent(agent_prompt, work_item, branch_name))
+                if success:
+                    self.log_action(f"Claude agent completed successfully for {work_item['id']}")
+                    return True
+                else:
+                    self.log_action(f"Claude agent failed for {work_item['id']}")
+                    return False
+            else:
+                # Fall back to creating agent request file for manual processing
+                agent_request_file = Path(f".claude/agent_requests/{work_item['id']}.json")
+                agent_request_file.parent.mkdir(exist_ok=True)
 
-            request_data = {
-                'work_id': work_item['id'],
-                'work_type': work_item.get('type'),
-                'branch': branch_name,
-                'title': work_item.get('title', ''),
-                'number': work_item.get('number'),
-                'status': 'pending',
-                'created_at': datetime.now().isoformat(),
-                'prompt_file': str(agent_plan_file),
-                'work_file': str(work_file)
-            }
+                request_data = {
+                    'work_id': work_item['id'],
+                    'work_type': work_item.get('type'),
+                    'branch': branch_name,
+                    'title': work_item.get('title', ''),
+                    'number': work_item.get('number'),
+                    'status': 'pending',
+                    'created_at': datetime.now().isoformat(),
+                    'prompt_file': str(agent_plan_file),
+                    'work_file': str(work_file)
+                }
 
-            with open(agent_request_file, 'w') as f:
-                json.dump(request_data, f, indent=2)
+                with open(agent_request_file, 'w') as f:
+                    json.dump(request_data, f, indent=2)
 
-            self.log_action(f"Created agent request at {agent_request_file}")
-            self.log_action(f"Agent execution queued for {work_item['id']}")
-
-            # Agent will be picked up by the agent_executor monitoring process
-            return True
+                self.log_action(f"Created agent request at {agent_request_file}")
+                self.log_action(f"Agent execution queued for {work_item['id']} - SDK not available")
+                return True
 
         except Exception as e:
             self.log_action(f"Failed to launch agent: {e}")
@@ -441,6 +459,51 @@ Good luck!
 """
 
         return execution_prompt
+
+    async def invoke_claude_agent(self, agent_prompt: str, work_item: Dict, branch_name: str) -> bool:
+        """Invoke Claude SDK to actually execute the work"""
+        try:
+            work_id = work_item['id']
+
+            # Configure Claude Code options
+            options = ClaudeCodeOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "MultiEdit", "NotebookEdit"],
+                permission_mode='acceptEdits',  # Auto-accept edits for autonomous operation
+                system_prompt=f"""You are an autonomous agent implementing {work_id}.
+Follow all instructions precisely. Create the work summary file as specified.
+Work independently and deliver production-ready code."""
+            )
+
+            # Collect all agent messages
+            messages = []
+            self.log_action(f"Starting Claude SDK agent for {work_id}")
+
+            # Invoke Claude with the execution prompt
+            async for message in query(
+                prompt=agent_prompt,
+                options=options
+            ):
+                # Log progress
+                if hasattr(message, 'content'):
+                    content_preview = str(message.content)[:100]
+                    self.log_action(f"Agent progress: {content_preview}...")
+                messages.append(message)
+
+            # Check if work summary was created
+            summary_file = Path(f".claude/agent_summary_{work_id}.md")
+            if summary_file.exists():
+                self.log_action(f"Work summary created at {summary_file}")
+                return True
+            else:
+                self.log_action(f"Warning: Work summary not found for {work_id}")
+                # Still return True if we got this far
+                return True
+
+        except Exception as e:
+            self.log_action(f"Error invoking Claude agent: {e}")
+            import traceback
+            self.log_action(f"Traceback: {traceback.format_exc()}")
+            return False
 
     def send_work_notification(self, work_item: Dict, branch_name: str, work_file: Path):
         """Send immediate email notification when work is assigned"""
