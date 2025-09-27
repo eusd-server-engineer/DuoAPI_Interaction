@@ -223,7 +223,7 @@ Get the issue details and implement what was requested in the comment."""
         work_file = Path(f".claude/work_{work_item['id']}.md")
         work_file.parent.mkdir(exist_ok=True)
 
-        with open(work_file, 'w') as f:
+        with open(work_file, 'w', encoding='utf-8') as f:
             f.write(f"# Autonomous Work Assignment\n\n")
             f.write(f"**Branch**: {branch_name}\n")
             f.write(f"**Work Item**: {work_item['id']}\n")
@@ -243,7 +243,7 @@ Get the issue details and implement what was requested in the comment."""
 
             # Write agent execution plan that can be picked up by a monitoring process
             agent_plan_file = Path(f".claude/agent_plan_{work_item['id']}.md")
-            with open(agent_plan_file, 'w') as f:
+            with open(agent_plan_file, 'w', encoding='utf-8') as f:
                 f.write(agent_prompt)
 
             # If Claude SDK is available, invoke it directly
