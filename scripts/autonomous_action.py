@@ -210,8 +210,7 @@ Get the issue details and implement what was requested in the comment."""
             self.log_action(f"Failed to create prompt for {work_item['id']}")
             return False
 
-        # For now, we'll create a work instruction file that you can use
-        # In a real implementation, this would use Claude's API
+        # Create work instruction file for reference
         work_file = Path(f".claude/work_{work_item['id']}.md")
         work_file.parent.mkdir(exist_ok=True)
 
@@ -222,14 +221,6 @@ Get the issue details and implement what was requested in the comment."""
             f.write(f"**Created**: {datetime.now()}\n\n")
             f.write("## Instructions\n\n")
             f.write(prompt)
-            f.write("\n\n## Commands to execute:\n\n")
-            f.write("```bash\n")
-            f.write(f"git checkout {branch_name}\n")
-            f.write("# Implement the solution\n")
-            f.write("git add .\n")
-            f.write("git commit -m 'Implement solution for issue'\n")
-            f.write("gh pr create --title 'Fix issue' --body 'Automated fix'\n")
-            f.write("```\n")
 
         self.log_action(f"Created work instructions at {work_file}")
 
@@ -237,9 +228,219 @@ Get the issue details and implement what was requested in the comment."""
         if self.notifier:
             self.send_work_notification(work_item, branch_name, work_file)
 
-        # Simulate agent work (in reality, this would call Claude API)
-        # For now, we'll just log that work needs to be done
-        return True
+        # Launch actual Claude agent to implement the solution
+        try:
+            agent_prompt = self.build_agent_execution_prompt(work_item, branch_name, prompt)
+
+            # Write agent execution plan that can be picked up by a monitoring process
+            agent_plan_file = Path(f".claude/agent_plan_{work_item['id']}.md")
+            with open(agent_plan_file, 'w') as f:
+                f.write(agent_prompt)
+
+            # Create agent request file for Claude Code to process
+            agent_request_file = Path(f".claude/agent_requests/{work_item['id']}.json")
+            agent_request_file.parent.mkdir(exist_ok=True)
+
+            request_data = {
+                'work_id': work_item['id'],
+                'work_type': work_item.get('type'),
+                'branch': branch_name,
+                'title': work_item.get('title', ''),
+                'number': work_item.get('number'),
+                'status': 'pending',
+                'created_at': datetime.now().isoformat(),
+                'prompt_file': str(agent_plan_file),
+                'work_file': str(work_file)
+            }
+
+            with open(agent_request_file, 'w') as f:
+                json.dump(request_data, f, indent=2)
+
+            self.log_action(f"Created agent request at {agent_request_file}")
+            self.log_action(f"Agent execution queued for {work_item['id']}")
+
+            # Agent will be picked up by the agent_executor monitoring process
+            return True
+
+        except Exception as e:
+            self.log_action(f"Failed to launch agent: {e}")
+            return False
+
+    def build_agent_execution_prompt(self, work_item: Dict, branch_name: str, task_prompt: str) -> str:
+        """Build comprehensive prompt for agent execution"""
+
+        work_type = work_item.get('type', 'unknown')
+        work_id = work_item['id']
+
+        execution_prompt = f"""# Autonomous Agent Task Execution
+
+## Context
+You are an autonomous agent working on a GitHub issue. Your goal is to implement a complete, production-ready solution.
+
+**Work Item ID**: {work_id}
+**Work Type**: {work_type}
+**Branch**: {branch_name}
+**Repository**: eusd-server-engineer/DuoAPI_Interaction
+
+## Task Requirements
+{task_prompt}
+
+## Execution Instructions
+
+### Phase 1: Setup and Analysis
+1. Switch to the working branch: `git checkout {branch_name}`
+2. Read and analyze the existing codebase to understand:
+   - Project structure and conventions
+   - Code style and patterns
+   - Existing similar implementations
+   - Dependencies and frameworks in use
+3. Review the requirements carefully and plan your implementation
+
+### Phase 2: Implementation
+1. Create or modify necessary files following project conventions
+2. Ensure code quality:
+   - Follow existing code style
+   - Add proper error handling
+   - Use existing utilities and patterns
+   - Add type hints where appropriate
+3. Write clean, maintainable, production-ready code
+4. Add comments only where necessary for complex logic
+
+### Phase 3: Testing
+1. Check if tests exist in the project
+2. Run existing tests to ensure nothing breaks: `uv run pytest tests/ -v` (if tests exist)
+3. Create new tests if the project has a test framework
+4. Verify the implementation manually if possible
+
+### Phase 4: Documentation
+1. Create a work summary file at `.claude/agent_summary_{work_id}.md` with:
+   - Overview of changes made
+   - Files created/modified
+   - Key decisions and rationale
+   - Testing performed
+   - Any issues encountered and how resolved
+   - Recommendations or future improvements
+
+### Phase 5: Commit and PR
+1. Stage all changes: `git add .`
+2. Create descriptive commit message following this format:
+"""
+
+        if work_type == 'issue':
+            execution_prompt += f"""
+   Implement: {work_item.get('title', 'Solution for issue')}
+
+   [Detailed description of what was implemented]
+
+   Fixes #{work_item.get('number', 'N/A')}
+
+   🤖 Generated with [Claude Code](https://claude.ai/code)
+
+   Co-Authored-By: Claude <noreply@anthropic.com>
+"""
+        else:
+            execution_prompt += f"""
+   Fix: {work_item.get('title', 'Automated fix')}
+
+   [Detailed description of what was fixed]
+
+   🤖 Generated with [Claude Code](https://claude.ai/code)
+
+   Co-Authored-By: Claude <noreply@anthropic.com>
+"""
+
+        execution_prompt += """
+3. Commit changes with the commit message
+4. Push the branch: `git push -u origin """ + branch_name + """` (if not already pushed)
+5. Create pull request with detailed description using:
+   ```bash
+   gh pr create --title "[Title]" --body "[Description]"
+   ```
+
+## Important Guidelines
+
+### Do NOT:
+- Create unnecessary files or documentation
+- Make changes outside the scope of the issue
+- Break existing functionality
+- Commit secrets or sensitive data
+- Use placeholder/mock data in production code
+
+### DO:
+- Follow project conventions religiously
+- Test your changes thoroughly
+- Write production-ready code
+- Create comprehensive work summary
+- Make atomic, focused changes
+- Handle errors gracefully
+- Log important operations
+
+## Success Criteria
+Your implementation is complete when:
+1. ✅ All requirements from the issue are implemented
+2. ✅ Code follows project conventions and style
+3. ✅ Tests pass (if applicable)
+4. ✅ Work summary file is created
+5. ✅ Changes are committed and pushed
+6. ✅ Pull request is created with good description
+7. ✅ No linting or type errors
+
+## Work Summary Template
+Your `.claude/agent_summary_{work_id}.md` file MUST include:
+
+```markdown
+# Agent Work Summary: {work_id}
+
+## Overview
+[Brief description of the task and solution]
+
+## Changes Made
+
+### Files Created
+- [List each file with brief purpose]
+
+### Files Modified
+- [List each file with what changed]
+
+## Implementation Details
+
+### Key Decisions
+[Explain major design decisions and why you made them]
+
+### Challenges Encountered
+[Any issues you ran into and how you solved them]
+
+### Testing Performed
+[What testing did you do? Manual? Automated?]
+
+## Code Quality Checklist
+- [ ] Follows project code style
+- [ ] Error handling implemented
+- [ ] No hardcoded values
+- [ ] Type hints added (if applicable)
+- [ ] Functions are focused and single-purpose
+- [ ] Comments added where needed
+
+## Integration Notes
+[How does this integrate with existing code? Any dependencies?]
+
+## Future Improvements
+[Suggestions for future enhancements or known limitations]
+
+## Verification Steps
+[How can a reviewer verify this works correctly?]
+
+## Time Spent
+[Approximate time spent on implementation]
+```
+
+## Final Notes
+You are an autonomous agent. Work independently, make good decisions, and deliver production-quality code. Your work will be reviewed, but aim to make it merge-ready on first attempt.
+
+Good luck!
+"""
+
+        return execution_prompt
 
     def send_work_notification(self, work_item: Dict, branch_name: str, work_file: Path):
         """Send immediate email notification when work is assigned"""
