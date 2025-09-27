@@ -233,9 +233,67 @@ Get the issue details and implement what was requested in the comment."""
 
         self.log_action(f"Created work instructions at {work_file}")
 
+        # Send immediate notification
+        if self.notifier:
+            self.send_work_notification(work_item, branch_name, work_file)
+
         # Simulate agent work (in reality, this would call Claude API)
         # For now, we'll just log that work needs to be done
         return True
+
+    def send_work_notification(self, work_item: Dict, branch_name: str, work_file: Path):
+        """Send immediate email notification when work is assigned"""
+        work_type = work_item.get('type', 'unknown')
+
+        if work_type == 'issue':
+            subject = f"🤖 Work Assigned: Issue #{work_item['number']} - {work_item['title']}"
+            body = f"""Autonomous Action System has assigned you work!
+
+Issue: #{work_item['number']} - {work_item['title']}
+Branch: {branch_name}
+Work Instructions: {work_file}
+
+To start working on this:
+1. git checkout {branch_name}
+2. Review instructions at {work_file}
+3. Implement the solution
+4. Create a PR when done
+
+View issue: gh issue view {work_item['number']}
+
+🤖 Generated with Claude Code (https://claude.ai/code)
+"""
+        elif work_type == 'workflow':
+            subject = f"⚠️ Workflow Failed: {work_item['name']}"
+            body = f"""Autonomous Action System detected a workflow failure!
+
+Workflow: {work_item['name']}
+Run ID: {work_item['run_id']}
+Reason: {work_item['reason']}
+
+To investigate:
+gh run view {work_item['run_id']} --log-failed
+
+🤖 Generated with Claude Code (https://claude.ai/code)
+"""
+        else:
+            subject = f"🤖 Work Assigned: {work_item.get('title', 'New Work')}"
+            body = f"""Autonomous Action System has assigned you work!
+
+Work Item: {work_item['id']}
+Branch: {branch_name}
+Work Instructions: {work_file}
+
+Review {work_file} for details.
+
+🤖 Generated with Claude Code (https://claude.ai/code)
+"""
+
+        self.notifier.send_email(
+            subject=subject,
+            body_text=body,
+            to_email="admin@eusd.org"
+        )
 
     def process_work_item(self, work_item: Dict) -> bool:
         """Process a single work item"""
