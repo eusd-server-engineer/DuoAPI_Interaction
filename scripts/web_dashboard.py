@@ -11,11 +11,17 @@ import sqlite3
 import subprocess
 import sys
 import time
+import base64
+import hashlib
+import hmac
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Thread, Lock
 from typing import Dict, List, Optional
+from urllib.parse import quote, urlencode
 
+import requests
+from dateutil.tz import tzutc
 from flask import Flask, request, render_template_string, jsonify, send_file, redirect, url_for, flash, session
 from flask_httpauth import HTTPBasicAuth
 from waitress import serve
@@ -38,6 +44,96 @@ operation_lock = Lock()
 # Database setup
 DB_PATH = Path('dashboard.db')
 
+class DuoAdminAPI:
+    """Client for Duo Admin API v1 operations"""
+
+    def __init__(self, integration_key: str, secret_key: str, api_host: str):
+        self.ikey = integration_key
+        self.skey = secret_key
+        self.host = api_host
+        self.base_url = f"https://{api_host}"
+
+    def _sign_request(self, method: str, path: str, params: Dict = None) -> tuple:
+        """Generate HMAC-SHA1 signature for Duo API request"""
+        # Format date
+        date = datetime.now(tzutc()).strftime('%a, %d %b %Y %H:%M:%S %z')
+
+        # Build canonical request
+        canon = [
+            date,
+            method.upper(),
+            self.host.lower(),
+            path,
+        ]
+
+        # Add sorted parameters for GET/DELETE methods
+        if params and method.upper() in ['GET', 'DELETE']:
+            sorted_params = sorted(params.items())
+            canon.append(urlencode(sorted_params))
+        else:
+            canon.append('')
+
+        canon_string = '\n'.join(canon)
+
+        # Calculate HMAC signature
+        signature = hmac.new(
+            self.skey.encode('utf-8'),
+            canon_string.encode('utf-8'),
+            hashlib.sha1
+        ).hexdigest()
+
+        # Build authorization header
+        auth = base64.b64encode(f"{self.ikey}:{signature}".encode()).decode()
+
+        headers = {
+            'Date': date,
+            'Authorization': f'Basic {auth}',
+            'Host': self.host,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+
+        return date, headers
+
+    def _request(self, method: str, endpoint: str, params: Dict = None) -> Dict:
+        """Make authenticated request to Duo API"""
+        path = f"/admin/v1{endpoint}"
+        date, headers = self._sign_request(method, path, params)
+
+        url = f"{self.base_url}{path}"
+
+        try:
+            if method.upper() in ['GET', 'DELETE']:
+                if params:
+                    url += '?' + urlencode(sorted(params.items()))
+                response = requests.request(method, url, headers=headers, timeout=30)
+            else:
+                response = requests.request(method, url, headers=headers, data=params, timeout=30)
+
+            response.raise_for_status()
+            result = response.json()
+
+            if result['stat'] != 'OK':
+                raise Exception(f"API error: {result.get('message', 'Unknown error')}")
+
+            return result.get('response', {})
+
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Request failed: {e}")
+
+    def get_user_by_username(self, username: str) -> Optional[Dict]:
+        """Find user by username"""
+        users = self._request('GET', '/users', {'username': username})
+        return users[0] if users else None
+
+    def update_user_status(self, user_id: str, status: str) -> bool:
+        """Update user status (Active, Bypass, Disabled, Locked Out)"""
+        try:
+            self._request('POST', f'/users/{user_id}', {'status': status})
+            return True
+        except Exception as e:
+            print(f"Failed to update user {user_id} status to {status}: {e}")
+            return False
+
 def init_db():
     """Initialize SQLite database for operation history"""
     conn = sqlite3.connect(DB_PATH)
@@ -56,6 +152,23 @@ def init_db():
             backup_file TEXT,
             duration INTEGER DEFAULT 0,
             user_triggered TEXT
+        )
+    ''')
+
+    # Add table for bypass management audit log
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS bypass_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            username TEXT NOT NULL,
+            user_id TEXT,
+            action TEXT NOT NULL,
+            old_status TEXT,
+            new_status TEXT,
+            success BOOLEAN NOT NULL,
+            error_message TEXT,
+            triggered_by TEXT NOT NULL,
+            ip_address TEXT
         )
     ''')
     conn.commit()
@@ -239,6 +352,56 @@ def get_operation_history(limit: int = 50) -> List[Dict]:
     conn.close()
     return operations
 
+def log_bypass_audit(username: str, user_id: str, action: str, old_status: str = None,
+                     new_status: str = None, success: bool = True, error_message: str = None,
+                     triggered_by: str = None, ip_address: str = None):
+    """Log bypass management actions for audit trail"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+        INSERT INTO bypass_audit (
+            timestamp, username, user_id, action, old_status, new_status,
+            success, error_message, triggered_by, ip_address
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        datetime.now().isoformat(),
+        username,
+        user_id,
+        action,
+        old_status,
+        new_status,
+        success,
+        error_message,
+        triggered_by,
+        ip_address
+    ))
+    conn.commit()
+    conn.close()
+
+def get_duo_api_client():
+    """Create and return Duo API client with credentials from environment"""
+    ikey = os.environ.get('DUO_IKEY')
+    skey = os.environ.get('DUO_SKEY')
+    host = os.environ.get('DUO_HOST')
+
+    if not all([ikey, skey, host]):
+        raise ValueError("Missing Duo API credentials. Check DUO_IKEY, DUO_SKEY, and DUO_HOST environment variables.")
+
+    return DuoAdminAPI(ikey, skey, host)
+
+def get_status_badge_class(status: str) -> str:
+    """Get Bootstrap badge class for user status"""
+    status_lower = status.lower()
+    if status_lower == 'active':
+        return 'success'
+    elif status_lower == 'bypass':
+        return 'warning'
+    elif status_lower == 'disabled':
+        return 'danger'
+    elif status_lower == 'locked out':
+        return 'info'
+    else:
+        return 'secondary'
+
 def get_stats() -> Dict:
     """Get dashboard statistics"""
     conn = sqlite3.connect(DB_PATH)
@@ -264,13 +427,22 @@ def get_stats() -> Dict:
     ).fetchone()[0]
     success_rate = (successful_ops / total_ops * 100) if total_ops > 0 else 0
 
+    # Bypass management stats
+    total_bypass_actions = conn.execute('SELECT COUNT(*) FROM bypass_audit').fetchone()[0]
+    recent_bypass_actions = conn.execute(
+        'SELECT COUNT(*) FROM bypass_audit WHERE timestamp > ?',
+        (thirty_days_ago,)
+    ).fetchone()[0]
+
     conn.close()
 
     return {
         'total_operations': total_ops,
         'recent_operations': recent_ops,
         'total_deleted': total_deleted,
-        'success_rate': round(success_rate, 1)
+        'success_rate': round(success_rate, 1),
+        'total_bypass_actions': total_bypass_actions,
+        'recent_bypass_actions': recent_bypass_actions
     }
 
 # HTML Template
@@ -453,6 +625,74 @@ DASHBOARD_HTML = '''
         <div class="row">
             <!-- Operation Controls -->
             <div class="col-md-8">
+                <!-- Bypass Management Card -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5><i class="fas fa-user-shield me-2"></i>Bypass Management</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <div class="input-group mb-3">
+                                    <input type="text" id="usernameSearch" class="form-control"
+                                           placeholder="Enter username (e.g., jdoe or jdoe@eusd.org)"
+                                           aria-label="Username">
+                                    <button class="btn btn-primary" type="button" id="searchUserBtn">
+                                        <i class="fas fa-search me-1"></i>Search User
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- User Info Display -->
+                        <div id="userInfo" class="d-none">
+                            <div class="card border-info">
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <h6 class="card-title">User Information</h6>
+                                            <p class="mb-1"><strong>Username:</strong> <span id="userUsername"></span></p>
+                                            <p class="mb-1"><strong>Name:</strong> <span id="userName"></span></p>
+                                            <p class="mb-1"><strong>Email:</strong> <span id="userEmail"></span></p>
+                                            <p class="mb-1"><strong>Enrolled:</strong> <span id="userEnrolled"></span></p>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <h6>Current Status</h6>
+                                            <p class="mb-3">
+                                                <span id="userStatusBadge" class="badge fs-6"></span>
+                                            </p>
+
+                                            <div class="mb-3">
+                                                <label for="newStatus" class="form-label">Change Status To:</label>
+                                                <select class="form-select" id="newStatus">
+                                                    <option value="">Select new status...</option>
+                                                    <option value="Active">Active</option>
+                                                    <option value="Bypass">Bypass</option>
+                                                    <option value="Disabled">Disabled</option>
+                                                    <option value="Locked Out">Locked Out</option>
+                                                </select>
+                                            </div>
+
+                                            <button id="updateStatusBtn" class="btn btn-warning w-100" disabled>
+                                                <i class="fas fa-edit me-1"></i>Update Status
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Loading indicator -->
+                        <div id="loadingIndicator" class="d-none text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="mt-2 text-muted">Searching user...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cleanup Operations Card -->
                 <div class="card mb-4">
                     <div class="card-header">
                         <h5><i class="fas fa-play-circle me-2"></i>Cleanup Operations</h5>
@@ -595,8 +835,207 @@ DASHBOARD_HTML = '''
         </div>
     </div>
 
+    <!-- Toast container for notifications -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="successToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header bg-success text-white">
+                <i class="fas fa-check-circle me-2"></i>
+                <strong class="me-auto">Success</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body" id="successToastBody">
+            </div>
+        </div>
+        <div id="errorToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header bg-danger text-white">
+                <i class="fas fa-exclamation-circle me-2"></i>
+                <strong class="me-auto">Error</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body" id="errorToastBody">
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal fade" id="confirmModal" tabindex="-1" aria-labelledby="confirmModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="confirmModalLabel">Confirm Status Change</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="confirmModalBody">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-warning" id="confirmUpdateBtn">Update Status</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        let currentUser = null;
+
+        // Helper functions
+        function showToast(type, message) {
+            const toastElement = document.getElementById(type + 'Toast');
+            const toastBody = document.getElementById(type + 'ToastBody');
+            toastBody.textContent = message;
+            const toast = new bootstrap.Toast(toastElement);
+            toast.show();
+        }
+
+        function getStatusBadgeClass(status) {
+            switch(status.toLowerCase()) {
+                case 'active': return 'bg-success';
+                case 'bypass': return 'bg-warning text-dark';
+                case 'disabled': return 'bg-danger';
+                case 'locked out': return 'bg-info';
+                default: return 'bg-secondary';
+            }
+        }
+
+        function updateActionButton() {
+            const newStatus = document.getElementById('newStatus').value;
+            const updateBtn = document.getElementById('updateStatusBtn');
+
+            if (newStatus && currentUser && newStatus !== currentUser.status) {
+                updateBtn.disabled = false;
+                updateBtn.innerHTML = `<i class="fas fa-edit me-1"></i>Set ${newStatus}`;
+            } else {
+                updateBtn.disabled = true;
+                updateBtn.innerHTML = '<i class="fas fa-edit me-1"></i>Update Status';
+            }
+        }
+
+        // Bypass Management Event Listeners
+        document.getElementById('searchUserBtn').addEventListener('click', function() {
+            const username = document.getElementById('usernameSearch').value.trim();
+            if (!username) {
+                showToast('error', 'Please enter a username');
+                return;
+            }
+
+            // Show loading
+            document.getElementById('loadingIndicator').classList.remove('d-none');
+            document.getElementById('userInfo').classList.add('d-none');
+
+            fetch(`/api/user/bypass?username=${encodeURIComponent(username)}`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('loadingIndicator').classList.add('d-none');
+
+                if (data.success) {
+                    currentUser = data.user;
+
+                    // Populate user info
+                    document.getElementById('userUsername').textContent = data.user.username;
+                    document.getElementById('userName').textContent =
+                        (data.user.firstname || '') + ' ' + (data.user.lastname || '');
+                    document.getElementById('userEmail').textContent = data.user.email || 'N/A';
+                    document.getElementById('userEnrolled').textContent = data.user.is_enrolled ? 'Yes' : 'No';
+
+                    // Update status badge
+                    const statusBadge = document.getElementById('userStatusBadge');
+                    statusBadge.textContent = data.user.status;
+                    statusBadge.className = `badge fs-6 ${getStatusBadgeClass(data.user.status)}`;
+
+                    // Reset form
+                    document.getElementById('newStatus').value = '';
+                    updateActionButton();
+
+                    // Show user info
+                    document.getElementById('userInfo').classList.remove('d-none');
+                } else {
+                    showToast('error', data.error);
+                }
+            })
+            .catch(error => {
+                document.getElementById('loadingIndicator').classList.add('d-none');
+                showToast('error', 'Network error: ' + error.message);
+            });
+        });
+
+        // Allow Enter key to trigger search
+        document.getElementById('usernameSearch').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('searchUserBtn').click();
+            }
+        });
+
+        // Update button when status selection changes
+        document.getElementById('newStatus').addEventListener('change', updateActionButton);
+
+        // Handle status update
+        document.getElementById('updateStatusBtn').addEventListener('click', function() {
+            const newStatus = document.getElementById('newStatus').value;
+            if (!newStatus || !currentUser) return;
+
+            // Show confirmation modal
+            document.getElementById('confirmModalBody').innerHTML =
+                `Are you sure you want to change <strong>${currentUser.username}</strong>'s status from <span class="badge ${getStatusBadgeClass(currentUser.status)}">${currentUser.status}</span> to <span class="badge ${getStatusBadgeClass(newStatus)}">${newStatus}</span>?`;
+
+            const confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
+            confirmModal.show();
+        });
+
+        // Handle confirmation
+        document.getElementById('confirmUpdateBtn').addEventListener('click', function() {
+            const newStatus = document.getElementById('newStatus').value;
+            if (!newStatus || !currentUser) return;
+
+            const confirmModal = bootstrap.Modal.getInstance(document.getElementById('confirmModal'));
+            confirmModal.hide();
+
+            // Disable button during update
+            const updateBtn = document.getElementById('updateStatusBtn');
+            updateBtn.disabled = true;
+            updateBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Updating...';
+
+            fetch('/api/user/bypass', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    username: currentUser.username,
+                    status: newStatus
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    if (data.no_change) {
+                        showToast('error', data.message);
+                    } else {
+                        showToast('success', data.message);
+
+                        // Update current user status
+                        currentUser.status = newStatus;
+
+                        // Update status badge
+                        const statusBadge = document.getElementById('userStatusBadge');
+                        statusBadge.textContent = newStatus;
+                        statusBadge.className = `badge fs-6 ${getStatusBadgeClass(newStatus)}`;
+
+                        // Reset form
+                        document.getElementById('newStatus').value = '';
+                    }
+                } else {
+                    showToast('error', data.error);
+                }
+                updateActionButton();
+            })
+            .catch(error => {
+                showToast('error', 'Network error: ' + error.message);
+                updateActionButton();
+            });
+        });
+
+        // Cleanup Operations Event Listeners
         document.getElementById('dryRunBtn').addEventListener('click', function() {
             fetch('/api/run-cleanup', {
                 method: 'POST',
@@ -680,6 +1119,146 @@ def api_status():
         })
     else:
         return jsonify({'is_running': False})
+
+@app.route('/api/user/bypass', methods=['GET'])
+@auth.login_required
+def api_get_user_bypass():
+    """API endpoint to get user bypass status"""
+    username = request.args.get('username')
+    if not username:
+        return jsonify({'success': False, 'error': 'Username is required'}), 400
+
+    try:
+        api = get_duo_api_client()
+        user = api.get_user_by_username(username)
+
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        # Log the lookup
+        log_bypass_audit(
+            username=username,
+            user_id=user.get('user_id'),
+            action='lookup',
+            triggered_by=auth.current_user(),
+            ip_address=request.remote_addr
+        )
+
+        return jsonify({
+            'success': True,
+            'user': {
+                'user_id': user.get('user_id'),
+                'username': user.get('username'),
+                'status': user.get('status'),
+                'email': user.get('email'),
+                'firstname': user.get('firstname'),
+                'lastname': user.get('lastname'),
+                'created': user.get('created'),
+                'last_login': user.get('last_login'),
+                'is_enrolled': user.get('is_enrolled'),
+                'phones': user.get('phones', []),
+                'tokens': user.get('tokens', [])
+            }
+        })
+
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    except Exception as e:
+        # Log the error
+        log_bypass_audit(
+            username=username,
+            user_id=None,
+            action='lookup',
+            success=False,
+            error_message=str(e),
+            triggered_by=auth.current_user(),
+            ip_address=request.remote_addr
+        )
+        return jsonify({'success': False, 'error': f'API error: {str(e)}'}), 500
+
+@app.route('/api/user/bypass', methods=['POST'])
+@auth.login_required
+def api_update_user_bypass():
+    """API endpoint to update user bypass status"""
+    data = request.get_json() or {}
+    username = data.get('username')
+    new_status = data.get('status')
+
+    if not username or not new_status:
+        return jsonify({'success': False, 'error': 'Username and status are required'}), 400
+
+    # Validate status
+    valid_statuses = ['Active', 'Bypass', 'Disabled', 'Locked Out']
+    if new_status not in valid_statuses:
+        return jsonify({'success': False, 'error': f'Invalid status. Must be one of: {", ".join(valid_statuses)}'}), 400
+
+    try:
+        api = get_duo_api_client()
+        user = api.get_user_by_username(username)
+
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        user_id = user.get('user_id')
+        old_status = user.get('status')
+
+        # Check if status is actually changing
+        if old_status == new_status:
+            return jsonify({'success': True, 'message': f'User status is already {new_status}', 'no_change': True})
+
+        # Update the user status
+        success = api.update_user_status(user_id, new_status)
+
+        if success:
+            # Log successful update
+            log_bypass_audit(
+                username=username,
+                user_id=user_id,
+                action='status_update',
+                old_status=old_status,
+                new_status=new_status,
+                success=True,
+                triggered_by=auth.current_user(),
+                ip_address=request.remote_addr
+            )
+
+            return jsonify({
+                'success': True,
+                'message': f'User status updated from {old_status} to {new_status}',
+                'old_status': old_status,
+                'new_status': new_status
+            })
+        else:
+            # Log failed update
+            log_bypass_audit(
+                username=username,
+                user_id=user_id,
+                action='status_update',
+                old_status=old_status,
+                new_status=new_status,
+                success=False,
+                error_message='API update failed',
+                triggered_by=auth.current_user(),
+                ip_address=request.remote_addr
+            )
+            return jsonify({'success': False, 'error': 'Failed to update user status'}), 500
+
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    except Exception as e:
+        # Log the error
+        log_bypass_audit(
+            username=username,
+            user_id=None,
+            action='status_update',
+            old_status=None,
+            new_status=new_status,
+            success=False,
+            error_message=str(e),
+            triggered_by=auth.current_user(),
+            ip_address=request.remote_addr
+        )
+        return jsonify({'success': False, 'error': f'API error: {str(e)}'}), 500
 
 @app.route('/download/<int:operation_id>')
 @auth.login_required
