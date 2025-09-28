@@ -66,8 +66,8 @@ class DuoAdminAPI:
             path,
         ]
 
-        # Add sorted parameters for GET/DELETE methods
-        if params and method.upper() in ['GET', 'DELETE']:
+        # Add sorted parameters for all methods (including POST)
+        if params:
             sorted_params = sorted(params.items())
             canon.append(urlencode(sorted_params))
         else:
@@ -128,10 +128,14 @@ class DuoAdminAPI:
     def update_user_status(self, user_id: str, status: str) -> bool:
         """Update user status (Active, Bypass, Disabled, Locked Out)"""
         try:
-            self._request('POST', f'/users/{user_id}', {'status': status})
+            print(f"[DUO API] Updating user {user_id} to status: {status}")
+            result = self._request('POST', f'/users/{user_id}', {'status': status})
+            print(f"[DUO API] Update successful: {result}")
             return True
         except Exception as e:
-            print(f"Failed to update user {user_id} status to {status}: {e}")
+            print(f"[DUO API ERROR] Failed to update user {user_id} status to {status}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
 def init_db():
@@ -1184,6 +1188,8 @@ def api_update_user_bypass():
     username = data.get('username')
     new_status = data.get('status')
 
+    print(f"[BYPASS UPDATE] Request received: username={username}, new_status={new_status}")
+
     if not username or not new_status:
         return jsonify({'success': False, 'error': 'Username and status are required'}), 400
 
@@ -1193,14 +1199,18 @@ def api_update_user_bypass():
         return jsonify({'success': False, 'error': f'Invalid status. Must be one of: {", ".join(valid_statuses)}'}), 400
 
     try:
+        print(f"[BYPASS UPDATE] Getting Duo API client...")
         api = get_duo_api_client()
+        print(f"[BYPASS UPDATE] Looking up user {username}...")
         user = api.get_user_by_username(username)
 
         if not user:
+            print(f"[BYPASS UPDATE] User not found: {username}")
             return jsonify({'success': False, 'error': 'User not found'}), 404
 
         user_id = user.get('user_id')
         old_status = user.get('status')
+        print(f"[BYPASS UPDATE] Found user {user_id}, current status: {old_status}")
 
         # Check if status is actually changing
         if old_status == new_status:
