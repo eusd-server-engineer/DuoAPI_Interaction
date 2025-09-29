@@ -239,6 +239,51 @@ def get_operation_history(limit: int = 50) -> List[Dict]:
     conn.close()
     return operations
 
+def get_duo_student_count() -> int:
+    """Get count of students in Duo system using API"""
+    try:
+        # Import the DuoAdminAPI from the cleanup script
+        import sys
+        sys.path.append(str(Path(__file__).parent))
+        from duo_student_cleanup import DuoAdminAPI, is_student_account
+
+        # Get API credentials from environment
+        ikey = os.environ.get('DUO_IKEY')
+        skey = os.environ.get('DUO_SKEY')
+        host = os.environ.get('DUO_HOST')
+
+        if not all([ikey, skey, host]):
+            return 0  # Return 0 if API not configured
+
+        # Create API client
+        api = DuoAdminAPI(ikey, skey, host)
+
+        # Get all users and count students
+        student_count = 0
+        offset = 0
+        limit = 100
+
+        while True:
+            users = api.list_users(limit=limit, offset=offset)
+            if not users:
+                break
+
+            # Count student accounts in this batch
+            for user in users:
+                if is_student_account(user.get('username', '')):
+                    student_count += 1
+
+            # Continue pagination if we got a full page
+            if len(users) < limit:
+                break
+            offset += limit
+
+        return student_count
+
+    except Exception as e:
+        print(f"Error getting student count: {e}")
+        return 0  # Return 0 on error
+
 def get_stats() -> Dict:
     """Get dashboard statistics"""
     conn = sqlite3.connect(DB_PATH)
@@ -246,14 +291,7 @@ def get_stats() -> Dict:
     # Total operations
     total_ops = conn.execute('SELECT COUNT(*) FROM operations').fetchone()[0]
 
-    # Recent operations (last 30 days)
-    thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
-    recent_ops = conn.execute(
-        'SELECT COUNT(*) FROM operations WHERE timestamp > ?',
-        (thirty_days_ago,)
-    ).fetchone()[0]
-
-    # Total deletions
+    # Total deletions (students cleaned up)
     total_deleted = conn.execute(
         'SELECT SUM(deleted_count) FROM operations WHERE status = "completed"'
     ).fetchone()[0] or 0
@@ -264,13 +302,23 @@ def get_stats() -> Dict:
     ).fetchone()[0]
     success_rate = (successful_ops / total_ops * 100) if total_ops > 0 else 0
 
+    # Last operation timestamp
+    last_op_result = conn.execute(
+        'SELECT timestamp FROM operations ORDER BY timestamp DESC LIMIT 1'
+    ).fetchone()
+    last_operation = last_op_result[0] if last_op_result else None
+
     conn.close()
 
+    # Get current student count from Duo
+    student_count = get_duo_student_count()
+
     return {
+        'total_students': student_count,
         'total_operations': total_ops,
-        'recent_operations': recent_ops,
-        'total_deleted': total_deleted,
-        'success_rate': round(success_rate, 1)
+        'success_rate': round(success_rate, 1),
+        'last_operation': last_operation,
+        'total_deleted': total_deleted  # Keep this for backward compatibility
     }
 
 # HTML Template
@@ -410,28 +458,28 @@ DASHBOARD_HTML = '''
     </nav>
 
     <div class="container-fluid mt-4">
-        <!-- Statistics Cards -->
+        <!-- Statistics Summary Cards -->
         <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card bg-primary text-white text-center">
+                    <div class="card-body">
+                        <i class="fas fa-users fa-2x mb-2"></i>
+                        <h3 class="card-title">{{ stats.total_students }}</h3>
+                        <p class="card-text">Students in Duo</p>
+                    </div>
+                </div>
+            </div>
             <div class="col-md-3">
                 <div class="card card-stats text-center">
                     <div class="card-body">
                         <i class="fas fa-tasks fa-2x mb-2"></i>
                         <h3 class="card-title">{{ stats.total_operations }}</h3>
-                        <p class="card-text">Total Operations</p>
+                        <p class="card-text">Cleanup Operations</p>
                     </div>
                 </div>
             </div>
             <div class="col-md-3">
                 <div class="card bg-success text-white text-center">
-                    <div class="card-body">
-                        <i class="fas fa-user-minus fa-2x mb-2"></i>
-                        <h3 class="card-title">{{ stats.total_deleted }}</h3>
-                        <p class="card-text">Total Deleted</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-info text-white text-center">
                     <div class="card-body">
                         <i class="fas fa-chart-line fa-2x mb-2"></i>
                         <h3 class="card-title">{{ stats.success_rate }}%</h3>
@@ -440,11 +488,17 @@ DASHBOARD_HTML = '''
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card bg-warning text-dark text-center">
+                <div class="card bg-info text-white text-center">
                     <div class="card-body">
                         <i class="fas fa-clock fa-2x mb-2"></i>
-                        <h3 class="card-title">{{ stats.recent_operations }}</h3>
-                        <p class="card-text">Recent (30d)</p>
+                        <h3 class="card-title">
+                            {% if stats.last_operation %}
+                                {{ stats.last_operation[:10] }}
+                            {% else %}
+                                Never
+                            {% endif %}
+                        </h3>
+                        <p class="card-text">Last Operation</p>
                     </div>
                 </div>
             </div>
